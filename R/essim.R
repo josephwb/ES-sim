@@ -1,5 +1,8 @@
 require(ape);
-require(mvtnorm);
+require(mvtnorm); # not needed in `_alt` version
+require(geiger); # for fitContinuous in `_alt` version
+require(phytools); # for fastBM in `_alt` version
+require(phangorn); # for Ancestors (ES calculation)
 
 essim <- function(phy, trait, nsim = 1000, es, return.es=FALSE) {
 	
@@ -64,11 +67,52 @@ essim <- function(phy, trait, nsim = 1000, es, return.es=FALSE) {
 	}
 }
 
-require(phangorn); # for Ancestors
+essim_alt <- function(phy, trait, nsim=1000, es, return.es=FALSE) {
+    
+    if (missing(es)) { # If inverse equal splits statistics not provided, calculate it
+        es <- compute_es(phy);
+    }
+    
+    # check if all tips have traits. will work whether newly computed or passed in
+    if (length(trait) < length(phy$tip.label)) {
+        idx <- which(!phy$tip.label %in% names(trait));
+        phy <- drop.tip(phy, idx);
+    }
+    
+    es <- log(es[phy$tip.label]); # log transform
+    trait <- trait[phy$tip.label];
+    
+    # Pearson's correlation between log inverse equal splits statistic and trait
+    res <- cor.test(es, trait, method="pearson");
+    
+    # get BM parameters (geiger)
+    fc <- fitContinuous(phy, trait, model="BM");
+    
+    # Brownian simulations (phytools)
+    sims.pt <- fastBM(phy, a=fc$opt$z0, sig2=fc$opt$sigsq, nsim=nsim);
+    
+    # Pearson's correlations of simulated datasets
+    sim.r <- sapply(1:nsim, function(x) cor.test(es[as.vector(rownames(sims.pt))], sims.pt[,x], method="pearson")$estimate);
+    
+    # Calculate the two-tailed p value
+    corr <- res$estimate;
+    upper <- (length(sim.r[sim.r >= corr])+1)/(nsim+1);
+    lower <- (length(sim.r[sim.r <= corr])+1)/(nsim+1);
+    pval <- 2*min(c(upper,lower)); # Remove "2" for one-tailed
+    
+    if (missing(return.es)) { # output just rho and p value
+        result <- as.vector(c(corr, pval));
+        names(result) <- c("rho", "P Value");
+        return (result);
+    } else { # output rho, p value, and list of es values
+        result <- as.vector(c(corr, pval, list(es)));
+        names(result) <- c("rho", "P Value", "es");
+        return (result);
+    }
+}
+
 compute_es <- function (phy) {
     Ntip <- length(phy$tip.label);
-    rootnd <- Ntip + 1L;
-    
     es <- numeric(Ntip);
     
     for (k in 1:Ntip) {
@@ -83,7 +127,6 @@ compute_es <- function (phy) {
         els <- phy$edge.length[match(lin, phy$edge[,2])];
         # compute in one
         es[k] <- 1/sum(els * (1 / 2^(inds-1)));
-        
     }
     names(es) <- phy$tip.label;
     return (es);
